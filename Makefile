@@ -26,13 +26,12 @@ view : $(THESIS).pdf
 	open $<
 
 wordcount:
-	@perl texcount.pl $(THESIS).tex -inc          | awk '/total/ {getline; print "词数　　:",$$4}' 
-	@perl texcount.pl $(THESIS).tex -inc -char    | awk '/total/ {getline; print "字符数　:",$$4}' 
-	@perl texcount.pl $(THESIS).tex -inc -ch-only | awk '/total/ {getline; print "中文字数:",$$4}' 
+	@perl texcount.pl $(THESIS).tex -inc -ch-only 2>/dev/null      | grep 'Words in text:'
 
 clean :
 	-@latexmk -c -silent 2> /dev/null
 	-@rm -f $(TEX_DIR)/*.aux 2> /dev/null || true
+	rm $(THESIS).bbl $(THESIS).xdv 
 
 cleanall :
 	-@latexmk -C -silent 2> /dev/null
