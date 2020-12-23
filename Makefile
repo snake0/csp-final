@@ -27,6 +27,7 @@ view : $(THESIS).pdf
 
 wordcount:
 	@perl texcount.pl $(THESIS).tex -inc -ch-only 2>/dev/null      | grep 'Words in text:'
+	@perl texcount.pl $(THESIS).tex -inc 2>/dev/null      | grep 'Words in text:'
 
 clean :
 	-@latexmk -c -silent 2> /dev/null
