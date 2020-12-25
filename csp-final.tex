@@ -5,6 +5,9 @@
 % 本文档命令
 \usepackage{array}
 \usepackage{authblk}
+\usepackage{pifont}
+\usepackage{threeparttable}
+
 \newcommand{\ccr}[1]{\makecell{{\color{#1}\rule{1cm}{1cm}}}}
 
 \title{大数据场景下语言虚拟机的性能分析与优化调研}
@@ -90,12 +93,57 @@ Chenxi Wang等人开发的Semeru\cite{semeru}是一个分布式的JVM，可以�
 
 三是如何高效地进行swap。目前的swap系统尚未对语言运行时进行适配，如在Infiniswap\cite{DBLP:conf/nsdi/GuLZCS17}上运行Spark会报错。Semeru修改了NVMe-oF的实现从而实现了高效的远程内存访问，同时添加了system call使得语言运行时能够高效地与swap系统进行交互。
 
-Semeru使得Spark和Flink在资源分解系统上获得了较大的性能提升，点对点性能在CPU服务器cache大小是50\%、25\%的heap大小的情况下分别提升了2.1倍、3.7倍，应用性能提升1.9倍、3.3倍，GC性能提升4.2倍、5.6倍。
+Semeru使得Spark和Flink在资源分解系统上获得了较大的性能提升，端到端性能在CPU服务器cache大小是50\%、25\%的heap大小的情况下分别提升了2.1倍、3.7倍，应用性能提升1.9倍、3.3倍，GC性能提升4.2倍、5.6倍。
 
 \subsection{相关工作小结}
 本章对语言虚拟机在大数据情景下遇到的问题做了总结，并针对每个问题分类、总结了相关研究工作的基本思想与原理。
 
 语言虚拟机在大数据环境下需要大量的对象对数据进行管理，这会造成内存开销过大、GC耗时过长的问题。Facade将Java程序中的数据面和控制面分开，从而将对象从heap（堆）中移动到native memory中，达到了优化目的，但有极大的开发难度，无法使用在真实生产环境下。
+
+\begin{table}
+  \centering
+	\caption{相关研究工作对比}		
+	\label{compare}
+	\resizebox{0.95\columnwidth}{!}{
+  \begin{tabular}{c|cccccccc}
+    \toprule[1.5pt] % 设置顶线的粗细
+    对比项 & Facade &Broom& Taurus& HotTub &Skyway&Gerenuk& Yak & Semeru\\
+    \midrule[1.5pt]
+    发表会议	& ASPLOS  & HotOS & ASPLOS & OSDI & ASPLOS & SOSP & OSDI & OSDI\\
+		年份	& 2015  & 2015 & 2016 & 2016 & 2018 & 2019 & 2016 & 2020\\
+		\hline                                       
+		% \rule{0pt}{10pt} % 15pt代表行宽
+		减轻GC负担& \ding{51} & \ding{51} & \ding{55} & \ding{55} & \ding{55} & \ding{51} & \ding{51} & \ding{55}\\
+		\hline                                        
+		% \rule{0pt}{10pt}
+	  减少S/D\footnotemark[1]操作	& \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{51} & \ding{51} & \ding{55} & \ding{55}\\
+		\hline
+		% \rule{0pt}{10pt}
+    控制/数据面分离 & \ding{51} & \ding{51} & \ding{55} & \ding{55} & \ding{51} & \ding{51} & \ding{51} &\ding{55} \\
+    \hline
+		% \rule{0pt}{10pt}
+    关注对象lifetime & \ding{55} & \ding{51} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{51} &\ding{55} \\
+    \hline
+		% \rule{0pt}{10pt}
+    无需手动修改应用& \ding{55} & \ding{55} & \ding{51} & \ding{51} & \ding{55} & \ding{51} & \ding{55} &\ding{51} \\
+    \hline
+		% \rule{0pt}{10pt}
+    减小应用启动时间 & \ding{55} & \ding{55} & \ding{55} & \ding{51} & \ding{55} & \ding{55} & \ding{55} &\ding{55} \\
+    \hline
+		% \rule{0pt}{10pt}
+    runtime间协调 & \ding{55} & \ding{55} & \ding{51} & \ding{55} & \ding{55} & \ding{55} & \ding{55} &\ding{55} \\
+    \hline
+		% \rule{0pt}{10pt}
+    资源分解架构GC & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} &\ding{51} \\
+    \hline
+		% \rule{0pt}{10pt}
+		基于JVM & \ding{51} & \ding{55} & \ding{51} & \ding{51} & \ding{51} & \ding{51} & \ding{51} &\ding{51} \\
+		\bottomrule[1.5pt]
+	\end{tabular}}
+\end{table}
+
+\footnotetext[1]{指Serialization序列化/Deserialization反序列化}
+
 
 Broom则关注了object的明确的生命周期，使用region-based的内存管理策略，为用户提供手动分配、释放数据对象的接口，但仅仅适用于Naiad开发者，且没有提供自动化支持，开发负担较大。Yak\cite{DBLP:conf/osdi/NguyenFXDLAM16}也关注到了大数据环境下数据对象的生命周期，通过使得GC算法适应于数据对象的生命周期，减小了GC的开销，但没有解决object造成的内存膨胀问题与序列化、反序列化问题。
 
@@ -105,7 +153,7 @@ Skyway和Gerenuk则关注了大数据环境下节点间数据交换的问题，S
 
 HotTub则关注JVM启动预热的开销问题，通过在内存中保留前次请求的JVM进程数据，从而免去了类加载、字节码解释执行的开销，但也加大了内存开销。
 
-本章总结的工作较大部分集中在如何降低Java使用对象保存、管理数据的开销上，也有关注分布式系统下各个节点上语言运行时的协调问题，以及语言运行时的预热问题，较大程度上解决了语言运行时在大数据场景下表现出的性能问题。
+本章总结的工作较大部分集中在如何降低Java使用对象保存、管理数据的开销上，也有关注分布式系统下各个节点上语言运行时的协调问题，以及语言运行时的预热问题，较大程度上解决了语言运行时在大数据场景下表现出的性能问题。各类研究的对比见表 \ref{compare}。
 
 \section{HotTub研究思路分析}
 \subsection{JVM预热开销测试与分析}
