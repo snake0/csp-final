@@ -46,18 +46,18 @@
 \section{大数据场景下语言虚拟机的性能问题与优化}
 大数据处理为托管型语言带来了全新的使用场景，同时托管型语言为大数据处理框架带来了较高的开发效率。新的使用情景为托管型语言的语言虚拟机带来了新的挑战。本章对大数据环境下语言虚拟机表现出的性能问题做了总结分析，并对研究者的相应解决方案进行了总结。
 
-\subsection{分布式环境下GC对性能的影响}
+\subsection{大数据场景下GC对性能的影响}
 \subsubsection{问题概述}
 在大数据场景下，应用需要良好的性能与扩展性，然而托管型语言的运行时环境存在臃肿、可扩展性差的问题。语言虚拟机的GC使得应用的主线程必须停止，需要遍历堆中保存的相互引用的复杂的对象，占用大量计算资源，无法进行有用的工作；内存管理模块也有巨大的额外内存开销，虽然所处理的数据量大小比堆内存的容量更小，也会产生OOM（Out Of Memory，内存不足）的报错。但使用非管理型语言会增加应用编写者的负担，更容易出现错误，调试内存管理错误也是一件非常困难的事。当前大量的大数据处理框架已经使用管理型语言进行编写，向非管理型语言的迁移会带来巨大的工作量。故需要有一种方法优化语言虚拟机的GC问题与内存空间占用问题。
 
 \subsubsection{解决方案}
 Nguyen等人提出了Facade\cite{DBLP:conf/asplos/NguyenWBFHX15}编译框架。他们认为将大量数据保存在堆内存上，让JVM进行管理是不明智的。通过限制堆内存上保存的对象数量，将数据面与控制面进行分离，仅在堆上保存控制面对象，而数据面中的数据保存在本地内存（native memory）中进行手动管理。这打破了面向对象编程语言的一条规则：对象应当包含数据以及操作数据的接口。对于每一个Java语言中的堆上保存的对象，Facade编译系统生成一个相应的facade，提供对象的操作接口而不保存对象中包含的数据，从而减轻垃圾收集器的负担，而程序员仅需标注出数据类（data class）。对于facade，可以通过对象复用限制堆中对象的数量；而native memory中的数据在每个iteration结束后统一进行释放，无需访问数据的每个字段，相比于垃圾收集器有更优的性能。经测试，Facade使得应用运行时间缩短了48\%，降低了50\%的内存占用。
 
-Gog等人提出了Broom\cite{DBLP:conf/hotos/GogGSVVRCMHI15}内存管理系统，取代了CLR\footnote{CLR，Common Language Runtime，是Microsoft .Net框架的语言虚拟机系统、运行时环境，运行.Net程序。使用任何语言编写的.Net程序均运行在CLR上，而JVM仅支持运行Java程序。}的GC系统。他们认为，大数据系统中存在多个Actor，这些Actor独立地运行，它们之间传递消息，形成了高度结构化的数据流，例如MapReduce\cite{DBLP:journals/cacm/DeanG08}中的map工作线程与reduce工作线程。每个Actor内的对象在Actor完成工作后不再会用到，仅有Actor之间传递的数据需要保存，无需GC扫描。为了针对这类高度结构化的应用对垃圾收集器进行优化，Broom内存管理器使用了基于region（分区）的内存管理策略，对象在各个region中保存而不在堆中由GC管理，由程序员手动释放region中的对象。Broom内存管理器减轻了GC的负担，减少了59\%的运行时间，但使得程序员的负担增加。
+Gog等人提出了Broom\cite{DBLP:conf/hotos/GogGSVVRCMHI15}内存管理系统，取代了CLR\footnote{CLR\cite{DBLP:conf/indin/CavalieriSG16}，Common Language Runtime，是Microsoft .Net框架的语言虚拟机系统、运行时环境，运行.Net程序。使用任何语言编写的.Net程序均运行在CLR上，而JVM仅支持运行Java程序。}的GC系统。他们认为，大数据系统中存在多个Actor，这些Actor独立地运行，它们之间传递消息，形成了高度结构化的数据流，例如MapReduce\cite{DBLP:journals/cacm/DeanG08}中的map工作线程与reduce工作线程。每个Actor内的对象在Actor完成工作后不再会用到，仅有Actor之间传递的数据需要保存，无需GC扫描。为了针对这类高度结构化的应用对垃圾收集器进行优化，Broom内存管理器使用了基于region（分区）的内存管理策略\cite{DBLP:conf/padl/ElsmanH20}，对象在各个region中保存而不在堆中由GC管理，由程序员手动释放region中的对象。Broom内存管理器减轻了GC的负担，减少了59\%的运行时间，但使得程序员的负担增加。
 
 \subsection{JVM启动耗时对延迟敏感型应用的影响}
 \subsubsection{问题概述}
-社区中长期存在对Java性能的激烈讨论，尤其是Java是否适合编写延迟敏感型应用的问题。一些程序员坚持使用C++等非管理型语言编写键值存储系统，因为他们认为Java天生就是较慢的。Java之所以适用于编写Hadoop框架是因为Hadoop大部分时间在进行I/O操作\cite{why}。在学术界，对于大数据框架的性能优化主要集中在对GC性能的优化、调度策略的优化、数据交换开销的优化等，故我们缺少对Java各个方面性能的整体了解。经过实验测得，在I/O密集型任务中，JVM的预热开销也是较大的，如在从HDFS中读取1G的文件的过程中，JVM预热使用的时间占总运行时间的33\%，预热时间不随任务数据量的变化而变化。在大数据框架中，复杂的软件栈使得Java运行环境的加载更加缓慢，因为需要加载更多的class，如Spark为了完成一次请求需要加载19066个class。
+社区中长期存在对Java性能的激烈讨论，尤其是Java是否适合编写延迟敏感型应用的问题\cite{debate1,debate2,debate3,debate4}。一些程序员坚持使用C++等非管理型语言编写键值存储系统，因为他们认为Java天生就是较慢的。Java之所以适用于编写Hadoop框架是因为Hadoop大部分时间在进行I/O操作\cite{why}。在学术界，对于大数据框架的性能优化主要集中在对GC性能的优化、调度策略的优化、数据交换开销的优化等，故我们缺少对Java各个方面性能的整体了解。经过实验测得，在I/O密集型任务中，JVM的预热开销也是较大的，如在从HDFS中读取1G的文件的过程中，JVM预热使用的时间占总运行时间的33\%b\cite{DBLP:conf/osdi/LionCSZGY16}，预热时间不随任务数据量的变化而变化。在大数据框架中，复杂的软件栈使得Java运行环境的加载更加缓慢，因为需要加载更多的class，如Spark为了完成一次请求需要加载19066个class。
 
 \subsubsection{解决方案}
 Lion等人经过实验测得，JVM的性能瓶颈在于JVM的启动预热（warm-up），并编写了HotTub\cite{DBLP:conf/osdi/LionCSZGY16}代替了HotSpot\footnote{HotSpot是一个Java虚拟机的实现，由Sun公司开发，包含在OpenJDK中，是主流的JVM。详见https://stackoverflow.com/questions/16568253/difference-between-jvm-and-hotspot}解决了Java虚拟机启动时间过长的问题。他们首先通过修改Java程序的调用过程测量出class加载与字节码解释执行的开销，观察出JVM预热对性能的巨大影响。同时，他们在HotSpot的基础上修改实现了HotTub，在多次请求中复用同一个JVM实例，从而免去JVM的预热开销。由于大数据应用的相似性，JVM有较大的复用可能，同时频繁使用的字节码在多次复用后被JIT编译成机器码而无需解释执行。HotTub可以让Java程序无修改地运行，免去了JVM的预热开销，使得Spark请求的性能提升到1.8倍。本文将在第三章对Lion等人的HotTub研究进行详细的分析，总结其使用范围与局限性，并在第四章中提出并测试相应的优化方案。
@@ -69,7 +69,7 @@ Lion等人经过实验测得，JVM的性能瓶颈在于JVM的启动预热（warm
 \subsubsection{解决方案}
 Maas等人设计的Taurus\cite{DBLP:conf/asplos/MaasA0K16}系统通过在分布式处理系统中加入一个分布式决策机制，将每个节点上独立的运行时系统组织为一个Holistic Runtime System（全局运行时系统，HRS），从而做出在分布式系统全局下正确的GC、JIT决策。HRS将每个节点上支持分布式应用运行的runtime当做一个整体，看作一个分布式系统，从而做出合理的全局决策，而非每个节点上的runtime独立地做出决策。当在某个节点上运行的一个Holistic Runtime System实例启动时，该实例加入执行同一个policy的runtime的集合，或成为该集合的leader，该集合称为一个coordination group（协调组）。每个实例启动时会附带执行monitor线程，从consensus layer（一致性层）获取本协调组的状态信息。在每个epoch（阶段）结束时，协调组的leader执行该协调组的policy，通过考虑所协调组中所有runtime的状态信息，制定下一个epoch中每个runtime需要执行的事件，同时，协调组中的每个runtime向leader发送自己的最新状态，从而开始下一个epoch。在实验中，作者针对每个分布式应用所遇到的特定问题制定了相应的policy，分别对批处理型工作负载和交互式工作负载进行测试。通过执行STU（Stop The Universe）的policy，批处理型工作负载Spark PageRank的执行时间降低了21\%；对于交互型工作负载Apache Cassandra，read请求的99.99\%的尾延迟从65.7 ms 降低到了 33.8 ms，99.9999\%尾延迟从128.6 ms 降低到了 54.6 ms。
 
-\subsection{分布式环境下节点数据交换的性能问题}
+\subsection{大数据场景下节点数据交换的性能问题}
 \subsubsection{问题概述}
 在大数据系统中，节点间数据的传递是频繁发生的。和之前GC性能问题的根源相同，数据传递也因为需要处理海量的包含着数据的对象（object）而受到了性能影响。数据发送方需要对于Java中的对象（object）进行\textit{serialize}（序列化）才可以在网络中传递，接收方需要将接收到的字节流进行\textit{deserialize}（反序列化）才能生成发送方想要发送的对象。序列化和反序列化严重依赖于Java中的反射机制，这是一个开销较大运行时操作，会严重影响应用的性能；同时程序员需要手写序列化和反序列化函数，较容易出现错误。在堆中使用object管理海量的数据不但会造成巨大的垃圾收集开销，同时因为object中存在的对象头、指向类的指针等产生巨大的额外内存开销。这要求我们进一步考虑Java等面向对象语言中object与数据处理的关系。
 
@@ -78,14 +78,14 @@ Nguyen等人提出的Skyway\cite{DBLP:conf/asplos/NguyenFNXDL18}将本地与远�
 
 Navasca等人认为，数据分析的任务经常使用的数据类型是不可变且被限制的，他们开发的Gerenuk\cite{DBLP:conf/sosp/NavascaCNDLKX19}编译器将一个SER（speculative execution region，预测执行区）编译为直接对来自于磁盘或网络的native bytes进行操作的代码，从而降低了object表示数据所产生的额外内存开销，同时减小了运行时开销、垃圾回收开销与序列化、反序列化开销。与Skyway不同，Gerenuk更希望数据以native bytes存在，这样有多方面的优势，如GC负担减小、object额外开销减小、序列化、反序列化开销减小。由于SER开始于一个反序列化点，终止于一个序列化点，Gerenuk需要大数据框架开发者标记出这些起始点与终结点。通过将object编译为处于native memory中的数据结构、细粒度地将Java bytecode编译为访问native memory的指令，Gerenuk获得了更低的GC开销与序列化、反序列化开销。Gerenuk编译的Spark、Hadoop程序均获得了更低的内存占用、更低的GC开销、序列化、反序列化开销等。
 
-\subsection{资源分解架构下的GC算法优化}
+\subsection{资源解聚架构下的GC算法优化}
 \subsubsection{问题概述}
-在大数据处理集群中，资源碎片化问题影响着集群资源使用率，如内存资源，单个节点不一定在全部的时间段都对内存有较高的利用率。当内存利用率较低时，单机上的空余内存无法被集群中其他节点所利用，即出现了资源碎片化的问题。资源分解架构的出现解决了这一问题，与普通的单体服务器（monolithic servers）不同，资源分解架构的数据中心中每个server仅负责对集群提供单一的一种资源，如内存服务器提供内存资源。这类架构使得某种资源可以被多个节点的进程使用，避免了资源碎片化问题；单个节点的崩溃不会影响整个系统，仅会使得某种资源的可用余量减小，提高了系统的容错能力，同时也提高了系统的可扩展性，可以方便地引入新的资源服务器扩充资源量。
+在大数据处理集群中，资源碎片化问题影响着集群资源使用率，如内存资源，单个节点不一定在全部的时间段都对内存有较高的利用率。当内存利用率较低时，单机上的空余内存无法被集群中其他节点所利用，即出现了资源碎片化的问题。资源解聚架构的出现解决了这一问题，与普通的单体服务器（monolithic servers）不同，资源解聚架构的数据中心中每个server仅负责对集群提供单一的一种资源，如内存服务器提供内存资源。这类架构使得某种资源可以被多个节点的进程使用，避免了资源碎片化问题；单个节点的崩溃不会影响整个系统，仅会使得某种资源的可用余量减小，提高了系统的容错能力，同时也提高了系统的可扩展性，可以方便地引入新的资源服务器扩充资源量。
 
-对于内存资源，虽然RDMA大大降低了访问远程内存的吞吐量与延迟，但是访问远程节点的内存仍然是一个耗时操作，具有良好的内存访问局部性的（locality）应用程序才能够高性能地运行在资源分解架构中。然而大数据场景下经常使用的管理型语言则不能表现出良好的内存访问局部性。GC需要遍历堆中的所有object来查找不可达的对象，是一个典型的图计算型工作负载，不具有局部性。同时，类似Java的管理型编程语言使用指针连接各种对象，这也不具有局部性。例如Spark中的RDD\footnote{RDD，Resilient Distributed Datasets\cite{DBLP:conf/nsdi/ZahariaCDDMMFSS12}，是Spark的核心数据结构，是一组可以被并行操作的可容错的分布式数据集，保存在内存中。}，在资源分解架构下，遍历一个RDD需要访问多个内存服务器。管理型语言的运行时需要对资源分解架构进行适配优化。
+对于内存资源，虽然RDMA大大降低了访问远程内存的吞吐量与延迟，但是访问远程节点的内存仍然是一个耗时操作，具有良好的内存访问局部性的（locality）应用程序才能够高性能地运行在资源解聚架构中。然而大数据场景下经常使用的管理型语言则不能表现出良好的内存访问局部性。GC需要遍历堆中的所有object来查找不可达的对象，是一个典型的图计算型工作负载，不具有局部性。同时，类似Java的管理型编程语言使用指针连接各种对象，这也不具有局部性。例如Spark中的RDD\footnote{RDD，Resilient Distributed Datasets\cite{DBLP:conf/nsdi/ZahariaCDDMMFSS12}，是Spark的核心数据结构，是一组可以被并行操作的可容错的分布式数据集，保存在内存中。}，在资源解聚架构下，遍历一个RDD需要访问多个内存服务器。管理型语言的运行时需要对资源解聚架构进行适配优化。
 
 \subsubsection{解决方案}
-Chenxi Wang等人开发的Semeru\cite{semeru}是一个分布式的JVM，可以支持Java程序无修改地运行在资源分解架构的集群中，通过将GC的object tracing、内存释放等工作卸载到内存服务器上，从而在GC时获得更好的并行性和局部性。为了实现一个资源分解架构友好的JVM，需要解决三个问题：
+Chenxi Wang等人开发的Semeru\cite{semeru}是一个分布式的JVM，可以支持Java程序无修改地运行在资源解聚架构的集群中，通过将GC的object tracing、内存释放等工作卸载到内存服务器上，从而在GC时获得更好的并行性和局部性。为了实现一个资源解聚架构友好的JVM，需要解决三个问题：
 
 一是应当提供怎样的内存抽象。由于需要将GC卸载到内存服务器上，则需要在内存服务器上运行一个对象管理进程（如JVM），那么同一个object在CPU服务器上的内存虚拟地址则与内存服务器上的不同。Semeru提供了一个统一Java堆（Universal Java heap，UJH）对于CPU 服务器上的main进程可以看到一个连续的统一的虚拟地址空间，存放着它操作的对象，而该main进程的辅助进程运行在各自的内存服务器上，可以看到并管理统一虚拟地址空间的一部分。
 
@@ -93,7 +93,7 @@ Chenxi Wang等人开发的Semeru\cite{semeru}是一个分布式的JVM，可以�
 
 三是如何高效地进行swap。目前的swap系统尚未对语言运行时进行适配，如在Infiniswap\cite{DBLP:conf/nsdi/GuLZCS17}上运行Spark会报错。Semeru修改了NVMe-oF的实现从而实现了高效的远程内存访问，同时添加了system call使得语言运行时能够高效地与swap系统进行交互。
 
-Semeru使得Spark和Flink在资源分解系统上获得了较大的性能提升，端到端性能在CPU服务器cache大小是50\%、25\%的heap大小的情况下分别提升了2.1倍、3.7倍，应用性能提升1.9倍、3.3倍，GC性能提升4.2倍、5.6倍。
+Semeru使得Spark和Flink在资源解聚系统上获得了较大的性能提升，端到端性能在CPU服务器cache大小是50\%、25\%的heap大小的情况下分别提升了2.1倍、3.7倍，应用性能提升1.9倍、3.3倍，GC性能提升4.2倍、5.6倍。
 
 \subsection{相关工作小结}
 本章对语言虚拟机在大数据情景下遇到的问题做了总结，并针对每个问题分类、总结了相关研究工作的基本思想与原理。
@@ -104,7 +104,7 @@ Semeru使得Spark和Flink在资源分解系统上获得了较大的性能提升�
   \centering
 	\caption{相关研究工作对比}		
 	\label{compare}
-	\resizebox{0.95\columnwidth}{!}{
+	\resizebox{\columnwidth}{!}{
   \begin{tabular}{c|cccccccc}
     \toprule[1.5pt] % 设置顶线的粗细
     对比项 & Facade &Broom& Taurus& HotTub &Skyway&Gerenuk& Yak & Semeru\\
@@ -131,10 +131,10 @@ Semeru使得Spark和Flink在资源分解系统上获得了较大的性能提升�
     减小应用启动时间 & \ding{55} & \ding{55} & \ding{55} & \ding{51} & \ding{55} & \ding{55} & \ding{55} &\ding{55} \\
     \hline
 		% \rule{0pt}{10pt}
-    runtime间协调 & \ding{55} & \ding{55} & \ding{51} & \ding{55} & \ding{55} & \ding{55} & \ding{55} &\ding{55} \\
+    运行时系统间协调 & \ding{55} & \ding{55} & \ding{51} & \ding{55} & \ding{55} & \ding{55} & \ding{55} &\ding{55} \\
     \hline
 		% \rule{0pt}{10pt}
-    资源分解架构GC & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} &\ding{51} \\
+    资源解聚架构GC & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} &\ding{51} \\
     \hline
 		% \rule{0pt}{10pt}
 		基于JVM & \ding{51} & \ding{55} & \ding{51} & \ding{51} & \ding{51} & \ding{51} & \ding{51} &\ding{51} \\
@@ -149,7 +149,7 @@ Broom则关注了object的明确的生命周期，使用region-based的内存管
 
 Skyway和Gerenuk则关注了大数据环境下节点间数据交换的问题，Skyway直接在节点之间传输object，省略了数据的native bytes格式，但没有解决object额外内存开销过大的问题；Gerenuk则将Java字节码编译为直接操作native bytes的语句，使得数据不以object形式存在，从根本上解决了之前研究成果遇到的问题。
 
-针对语言虚拟机的大量优化仅关注了单机上的语言虚拟机的优化，没有关注全局的运行情况对语言虚拟机的影响。Taurus使用Holistic Runtime System对分布式系统中每个节点上的heap进行管理，通过监控每个节点的运行情况，在合适的时间进行GC，使得垃圾回收不影响分布式应用的性能。而Semeru则关注内存分解架构下的语言虚拟机GC性能问题，将GC卸载到内存服务器上，提高了GC的内存访问局部性。
+针对语言虚拟机的大量优化仅关注了单机上的语言虚拟机的优化，没有关注全局的运行情况对语言虚拟机的影响。Taurus使用Holistic Runtime System对分布式系统中每个节点上的heap进行管理，通过监控每个节点的运行情况，在合适的时间进行GC，使得垃圾回收不影响分布式应用的性能。而Semeru则关注内存解聚架构下的语言虚拟机GC性能问题，将GC卸载到内存服务器上，提高了GC的内存访问局部性。
 
 HotTub则关注JVM启动预热的开销问题，通过在内存中保留前次请求的JVM进程数据，从而免去了类加载、字节码解释执行的开销，但也加大了内存开销。
 
@@ -157,7 +157,7 @@ HotTub则关注JVM启动预热的开销问题，通过在内存中保留前次�
 
 \section{HotTub研究思路分析}
 \subsection{JVM预热开销测试与分析}
-// TODO
+
 \subsection{HotTub设计与实现}
 // TODO
 \subsection{HotTub性能测试}
