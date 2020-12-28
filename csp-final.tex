@@ -10,6 +10,8 @@
 \usepackage{titlesec}
 \usepackage{hyperref}
 \usepackage{listings}
+\usepackage{subfigure}
+\usepackage{diagbox}
 
 \newcommand{\sectionbreak}{\clearpage}
 
@@ -34,6 +36,8 @@
 
 \cleardoublepage
 \tableofcontents
+\listoffigures
+\addcontentsline{toc}{chapter}{\listfigurename} %将插图目录加入全文目录
 \cleardoublepage
 
 \section{研究背景}
@@ -255,14 +259,102 @@ HotTub则关注JVM启动预热的开销问题。大数据框架中的延迟敏�
   \label{fig:br3}
 \end{figure}
 
-Hive和Spark并行化客户请求的方式有所不同，Hive将用户的请求并行地执行在多个JVM进程中，而Spark仅有一个executor进程执行并行化的客户请求。每个JVM进程运行在container中，作为一个计算线程。然而，Hive和Tez在处理同一个用户请求的过程中会复用用一个JVM的container进程，这在一定程度上减小了JVM预热开销对性能的影响。
+Hive和Spark并行化客户请求的方式有所不同，Hive将用户的请求并行地执行在多个JVM进程中，而Spark仅有一个executor进程执行并行化的客户请求。每个JVM进程运行在container中，作为一个计算线程。然而，Hive和Tez在处理同一个用户请求的过程中会复用用一个JVM的container进程，这在一定程度上减小了JVM预热开销对性能的影响，可以通过图\ref{fig:br2}看到，Hive遇到的JVM预热开销要小于Spark。
 
 \paragraph{测试收获总结}
 经过测试，研究者得知JVM预热耗时不随着请求数据量的变化而明显变化，同时运行时间短、并行度高的应用的运行时间会大部分地被JVM预热占据。事实上，大数据处理框架更倾向于进行运行时间短的请求，提升程序的并行度，充分利用分布式系统中充足的计算资源。复杂的分布式框架加重了JVM预热开销大的问题，因为需要加载更多的class、执行更多的不同的函数。
 
 \subsection{HotTub设计与实现}
+\subsubsection{总体设计}
+HotTub的设计目标是，使得应用程序能够重用JVM进程，即重用热数据，从而减小JVM的预热开销。有两种设计策略：一是显式地在JVM进程之间拷贝热数据，二是在正确地重置JVM进程的状态后重新使用同一个JVM进程。研究者首先使用第一种设计策略进行开发，通过将class meta-data与JIT编译好的机器码保存在磁盘上等待下一个JVM进程重用。虽然成功地在不同的JVM进程之间共享了已经加载到内存重的class，但研究者们最终放弃了这个设计策略，由于维护两个不同地址空间中的指针的一致性太过复杂。举例而言，JIT编译生成的代码是不可重定位（relocatable）的，而一个JIT编译过的函数可能跳转到另一个JIT编译过的函数，产生错误。为了解决这个问题，我们必须在同一个JVM的地址空间中进行已加载class、JIT编译代码的共享，这不具有灵活性；或修改所有指针的值，这是不现实的。
+
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=10cm]{8-a.png}
+  \caption{HotTub架构}
+  \label{fig:arch}
+\end{figure}
+
+于是，研究者采用了第二个设计策略，即在多次用户请求中重用同一个JVM进程，同时利用JVM自带的GC功能清除垃圾数据。图\ref{fig:arch}是HotTub的架构。HotTub无需用户修改代码，和未修改的JVM相同，只需运行\texttt{java}命令即可启动java应用。而与未修改的JVM不同，执行HotTub的\texttt{java}命令会\texttt{fork}出一个HotTub的\textit{client}，与JVM pool中已经预热了的JVM进行通信，称之为\textit{server}，并将执行java程序的任务移交给server。server运行完毕，并将返回值发送给client，使得client正常退出。server完成一次client的请求之后进行GC，并重置JVM的状态，以供下次client请求使用。
+
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=10cm]{9-a.png}
+  \caption{HotTub client运行过程}
+  \label{fig:client}
+\end{figure}
+
+如图\ref{fig:client}是client的具体执行过程。为了使得进程找到最合适的JVM进程，client对classpath以及classpath上的所有包含class的文件计算checksum，从而使得使用相同class、执行类似的代码的java程序重用同一个JVM server，从而最大程度地减小class loading以及bytecode interpretation的开销。同时，client在checksum尾部加上一个\texttt{0}到\texttt{POOL\_SIZE}之间的数字（图\ref{fig:client}中第5行），作为一个server的地址（ID），client使用该ID与server进行通信。client会尝试与\texttt{0}到\texttt{POOL\_SIZE}之间的server进行通信，如果一个server正在忙于处理某个客户端的请求，则跳过（图\ref{fig:client}中第9行）。如果没有找到合适的server，则通过\texttt{fork}创建一个新的JVM进程。这样的\texttt{fork}设计具有良好的容错性，同时也为应用找到最合适的server提供了可能：最合适的server不但会降低JVM预热开销，同时提升了memory cache、TLB的命中率，由于无需切换或重新创建进程，操作系统无需冲刷memory cache和TLB。
+
+\subsubsection{设计细节}
+HotTub的设计困难在于，要保证应用在HotTub上执行的结果与在未修改的JVM上运行得到的结果相同，即保证一致性。首先，栈上的数据不会造成不一致性，因为Java程序退出时会将栈中的数据全部弹出。其次，HotTub的server在处理完一个client的请求之后即运行GC，堆上的数据也不会造成不一致性的问题。在JVM server进程地址空间中残留的数据有（1）已加载的class信息，（2）JIT编译好的机器码，（3）静态变量，（4）文件描述符。这三类需要保证一致性的数据中，前三者保存在JVM的方法区，需要在server请求运行完毕后重置；文件描述符需要client传输给server，才能使得server正常执行。
+
+\paragraph{已加载的class信息}
+HotTub必须保证HotTub server中保留的class信息与正常启动的JVM进程相同，这些信息可能在运行时被改变。在保证class信息一致性的同时，也保证了JIT已编译机器码的一致性，由于JIT已编译机器码来自于class的字节码（bytecode）。事实上，在client选取server之时，已经对classpath中所有的class计算了checksum，这使得从classpath加载的class有了一致性。而用户代码自动生成的class将不会保留到下一次server请求的执行，由于每次server运行必定会产生一个全新的class loader。
+
+\paragraph{静态变量}
+在server请求执行后，静态变量残留的值依然存在。HotTub必须重置这些静态变量从而保证一致性。调用class的<clinit>初始化方法即可重置这些静态变量。然而，需要保证每个class的<clinit>函数的调用顺序正确。事实上，有初始化时间依赖的静态变量是bad programming practice，即class A的静态变量初始化依赖于class B的静态变量初始化。这会导致程序难以调试，理解也十分困难。事实上，在测试阶段，尚未有大数据框架出现了这类坏的编程风格，故我们无需关注这一corner case。
+
+\paragraph{文件描述符}
+HotTub server在处理完一次client请求后即关闭所有由应用程序打开的的文件描述符，包括stdin，stdout，stderr，以供下一个请求的处理。剩下没有关闭的文件描述符均是由JVM打开，大多是JAR文件。当新的client请求到来时，client将所有的文件描述符通过Unix domain socket发送给server，这样server即可继承client所有已经打开的文件描述符。但会存在server占用了client已经打开的文件描述符的情况，故在client挑选server时，会检查是否存在文件描述符的冲突。
+
+\paragraph{信号处理与退出}
+HotTub需要处理\texttt{SIGTERM}和\texttt{SIGINT}信号，从而使得应用程序按照预期的行为退出。如果应用程序注册了\texttt{SIGTERM}和\texttt{SIGINT}的信号处理函数，则将信号转发给应用。如果应用没有注册相应的信号处理函数，则将非守护的Java线程的栈解开，再kill掉此线程。JVM守护线程不会在JVM退出时退出，我们同样需要将其kill，以保证一致性。但是，如果进程调用了native library中的\texttt{\_exit}函数，则无法保留这个server供未来的client请求使用。
+
+\subsubsection{实现细节}
+HotTub client的实现独立于JVM，共800行C代码；server的实现基于OpenJDK的HotSpot JVM，添加了800行C/C++代码，server和client在不同的进程中。由于Unix domain socket可以方便地在进程之间发送文件描述符，我们使用Unix domain socket进行client和server之间的信息传递，且这样可以免去在client、server进程之间传递文件数据的必要，大大提升了client和server的交互性能。
+
+\paragraph{进程管理} 对于OpenJDK中HotSpot的修改，作者没有使用新创建的线程接收client的请求，而是修改Java的main thread，使之更像一个server：在Java main thread的逻辑结束运行后，使用main thread完成一系列的重置操作，包括：（1）kill其他的Java线程（2）重置所有静态变量为默认值（3）对heap进行GC（4）可选择卸载所有加载的native library。当一个server接收到client的连接后，server重新初始化所有静态变量，正确地设置所有文件描述符，并正确地设置所有Java属性值、环境变量等，最终调用\texttt{main()}函数。
+
+\paragraph{静态变量初始化} 对于JVM中所有的class，都存在相应的\texttt{java.lang.Class}对象，可以通过该对象访问该class的field和method。然而，对于一个Enum类型的class，其\texttt{java.lang.Class}对象保存了Enum名字符串和对应的object的映射，而在每次静态变量初始化后，都会心产生一个对应于Enum名字符串的object，故在静态变量初始化之后应当更新Enum的\texttt{java.lang.Class}对象中保存的映射关系。其次，启用static final reference inline的JIT编译过的代码会直接访问inline的object的地址。在HotTub中，static final的object将被重新初始化，其地址也会改变。为了方便起见，我们将static final reference inline特性关闭。
 
 \subsection{HotTub性能测试}
+本节对HotTub各方面的性能进行了测试。首先，通过在HotTub和未修改的JVM上不断重复执行相同的workload，测试HotTub是否可以消除JVM预热开销。其次，由于相同的workload最大化了warm data的复用，HotTub会表现出最好的性能，还需要测试不同的workload下HotTub的性能降低程度。最后，由于HotTub的server和client需要通信，server处理完一个client的请求之后需要重置JVM的状态，新建sever时需要调用\texttt{fork}等系统调用，且在内存中驻留的server进程保存了warm data，占据了额外的内存，HotTub相比于未修改的JVM有额外的开销。我们称之为管理开销（management overhead）。如果管理开销过大，则HotTub不具有实用性，我们还需测试HotTub的管理开销。
+
+\subsubsection{性能提升}
+首先我们测试HotTub利用warm data减小JVM预热开销的能力。对于未修改的JVM，我们运行五次相同的workload；对于HotTub，首先运行此workload一次，完成warm data的加载，再运行此workload五次。通过比较在未修改的JVM上运行五次相同的workload，和在HotTub预热后运行五次相同的workload，可以观察HotTub是否达到了减小预热时间的目的。
+
+首先，我们关闭JVM中的时间标记，对真实的大数据场景下的高频事件进行测试。重新进行\ref{sec:exe}中的实验，HotTub显著提升了延迟敏感性应用的性能。对于Spark SQL，每次请求100GB数据耗费的时间减小了29秒。对于HDFS，读取1MB数据的性能被提升了30.08倍。在200次对比测试中，所有的在HotTub上执行的任务均比未修改的JVM上执行的任务耗时更短。
+
+\begin{figure*}[!htp]
+  \centering
+  \subfigure[HotTub上Spark请求执行时间分解测试]{
+  \includegraphics[width=0.49\textwidth]{10-a.png}}
+  \subfigure[HotTub上的HDFS read请求测试]{
+  \includegraphics[width=0.49\textwidth]{11-a.png}}
+  \caption{HotTub性能分析}
+  \label{fig:br6}
+\end{figure}
+
+再打开JVM中的时间标记，对JVM中各部分的执行时间进行观察。如图\ref{fig:br6}（a），在所有的测试中，HotTub上运行的应用需要的JVM预热时间总是小于1\%的总执行时间，图中的预热时间太小已经无法观察到。如图\ref{fig:br6}（b），可以观察到在HotTub上初次执行的应用仍然有较长的延时，这是由于尚未有warm data以供使用。同时可以观察到，经过了12次的重复执行，HDFS read达到了最高性能，这进一步说明较短的任务甚至在没有达到最高执行性能时已经完成执行，HotTub保存warm data对于短任务的性能有极高的提升（30.08倍，如前文所述）。在微观性能上，HotTub减小了memory footprint，也减小了cache miss，同时减小了进程切换导致的TLB flush，由于篇幅原因，这些微观指标的测试不做介绍。
+
+\subsubsection{工作负载变化的性能影响}
+在真实场景下，JVM很少会执行同一个query多次，而是不断更换处理的工作负载的种类。这在一定程度上削尖了HotTub的优势，由于不同的工作负载将用到不同的class和JIT compiled code。为了测试这种工作负载的变化对HotTub的性能影响，我们首先运行training query多次，使得HotTub server中充满training query的warm data，再执行一次不同于training query的testing query，通过对比此情况下testing query的性能与在未修改的JVM上运行的性能，即可得知工作负载变化对HotTub的性能影响。如表\ref{compare1}所示，由于query之间的相似性（使用相同的class和code），不同query之间获得的性能提升有最低的1.47倍（q14->q15），但相同query获得的性能提升最高有1.78倍（q11->q11）。
+
+\begin{table}
+  \centering
+	\caption{Spark query的不同对HotTub性能优化的影响程度}		
+	\label{compare1}
+	\resizebox{0.5\columnwidth}{!}{
+  \begin{tabular}{c|ccccc}
+    \toprule[1.5pt] % 设置顶线的粗细
+    \diagbox{特点}{算法} & q11 & q14 &q15 &q09 &q01\\
+    \midrule[1.5pt]
+    q11&1.78 &1.67 & 1.51&1.49 &1.55 \\
+    \hline
+    q14& 1.64& 1.65&1.47 &1.49 &1.50 \\                                 
+    \hline
+    q15& 1.72&1.67& 1.62 &1.54& 1.62 \\
+    \hline
+    q09& 1.57& 1.59 &1.55& 1.53& 1.53\\
+    \hline
+    q01& 1.76& 1.74 &1.65& 1.54& 1.74 \\
+    \bottomrule[1.5pt]
+	\end{tabular}}
+\end{table}    
+
+\subsubsection{引入的管理开销}
+管理开销可以分为两部分，一部分在critical path上，直接影响client的性能，如client与server建立连接，server的class初始化；另一部分不在critical path上，仅影响server在处理完一次client请求之后多久才可以被重新使用，如server重置所有静态变量。经过测试，当JVM pool中没有待使用的server时，client需要$81ms$与server建立连接；如果有可重用的server，则连接耗时仅为$300\mu{}s$。server中class初始化耗时对于Hive而言是$350ms$，对于Spark executor是$400ms$，对于Spark客户端是$720ms$。每个未使用的已预热过的JVM server占用约1GB的内存。
 
 \subsection{HotTub适用性与局限性分析}
 
