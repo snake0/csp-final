@@ -12,6 +12,33 @@
 \usepackage{listings}
 \usepackage{subfigure}
 \usepackage{diagbox}
+\usepackage{xcolor}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=10pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+
+\lstset{style=mystyle}
 
 \newcommand{\sectionbreak}{\clearpage}
 
@@ -36,8 +63,10 @@
 
 \cleardoublepage
 \tableofcontents
+\cleardoublepage
 \listoffigures
-\addcontentsline{toc}{chapter}{\listfigurename} %将插图目录加入全文目录
+\cleardoublepage
+\listoftables
 \cleardoublepage
 
 \section{研究背景}
@@ -312,9 +341,9 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
 本节对HotTub各方面的性能进行了测试。首先，通过在HotTub和未修改的JVM上不断重复执行相同的workload，测试HotTub是否可以消除JVM预热开销。其次，由于相同的workload最大化了warm data的复用，HotTub会表现出最好的性能，还需要测试不同的workload下HotTub的性能降低程度。最后，由于HotTub的server和client需要通信，server处理完一个client的请求之后需要重置JVM的状态，新建sever时需要调用\texttt{fork}等系统调用，且在内存中驻留的server进程保存了warm data，占据了额外的内存，HotTub相比于未修改的JVM有额外的开销。我们称之为管理开销（management overhead）。如果管理开销过大，则HotTub不具有实用性，我们还需测试HotTub的管理开销。
 
 \subsubsection{性能提升}
-首先我们测试HotTub利用warm data减小JVM预热开销的能力。对于未修改的JVM，我们运行五次相同的workload；对于HotTub，首先运行此workload一次，完成warm data的加载，再运行此workload五次。通过比较在未修改的JVM上运行五次相同的workload，和在HotTub预热后运行五次相同的workload，可以观察HotTub是否达到了减小预热时间的目的。
+本小节测试HotTub利用warm data减小JVM预热开销的能力。对于未修改的JVM，我们运行五次相同的workload；对于HotTub，首先运行此workload一次，完成warm data的加载，再运行此workload五次。通过比较在未修改的JVM上运行五次相同的workload，和在HotTub预热后运行五次相同的workload，可以观察HotTub是否达到了减小预热时间的目的。
 
-首先，我们关闭JVM中的时间标记，对真实的大数据场景下的高频事件进行测试。重新进行\ref{sec:exe}中的实验，HotTub显著提升了延迟敏感性应用的性能。对于Spark SQL，每次请求100GB数据耗费的时间减小了29秒。对于HDFS，读取1MB数据的性能被提升了30.08倍。在200次对比测试中，所有的在HotTub上执行的任务均比未修改的JVM上执行的任务耗时更短。
+首先，我们关闭JVM中的时间标记，对真实的大数据场景下的高频事件进行测试。重新进行第\ref{sec:exe}节中的实验，HotTub显著提升了延迟敏感性应用的性能。对于Spark SQL，每次请求100GB数据耗费的时间减小了29秒。对于HDFS，读取1MB数据的性能被提升了30.08倍。在200次对比测试中，所有的在HotTub上执行的任务均比未修改的JVM上执行的任务耗时更短。
 
 \begin{figure*}[!htp]
   \centering
@@ -335,10 +364,10 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
   \centering
 	\caption{Spark query的不同对HotTub性能优化的影响程度}		
 	\label{compare1}
-	\resizebox{0.5\columnwidth}{!}{
+	\resizebox{0.6\columnwidth}{!}{
   \begin{tabular}{c|ccccc}
     \toprule[1.5pt] % 设置顶线的粗细
-    \diagbox{特点}{算法} & q11 & q14 &q15 &q09 &q01\\
+    \diagbox{Training}{Testing} & q11 & q14 &q15 &q09 &q01\\
     \midrule[1.5pt]
     q11&1.78 &1.67 & 1.51&1.49 &1.55 \\
     \hline
@@ -356,14 +385,63 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
 \subsubsection{引入的管理开销}
 管理开销可以分为两部分，一部分在critical path上，直接影响client的性能，如client与server建立连接，server的class初始化；另一部分不在critical path上，仅影响server在处理完一次client请求之后多久才可以被重新使用，如server重置所有静态变量。经过测试，当JVM pool中没有待使用的server时，client需要$81ms$与server建立连接；如果有可重用的server，则连接耗时仅为$300\mu{}s$。server中class初始化耗时对于Hive而言是$350ms$，对于Spark executor是$400ms$，对于Spark客户端是$720ms$。每个未使用的已预热过的JVM server占用约1GB的内存。
 
-\subsection{HotTub适用性与局限性分析}
-
-
 \section{HotTub局限性优化}
-// TODO
+通过总结前文描述的大数据场景下语言虚拟机所遇到的性能瓶颈，我们认为HotTub的设计与实现尚未考虑到内存占用过多的问题，同时也没有对分布式系统中各个节点的状态进行考虑。
 
-\section{总结}
-// TODO
+（1）HotTub通过将已加载的class信息以及JIT编译过的代码保存在内存中，使得query重用JVM进程（\texttt{server}），从而达到避免加载class文件、重新编译JIT可以提前编译的代码的目的，但在实验分析中，我们观察到对于JVM进程的重用并不充分，占用的额外内存仍然过多，仍有可优化的余地；
+
+（2）考虑到分布式系统中数量庞大的节点，仅仅对一个节点上的Java请求进行预热优化并不能达到全局优化的目的。如Taurus\cite{DBLP:conf/asplos/MaasA0K16}的设计者们观察到的节点间相互牵制的问题，分布式系统中请求的处理并不仅依赖于单个节点，而是通过多节点协作完成请求处理，其请求的latency依赖于系统中完成任务最慢的节点。
+
+本章对以上两个问题进行论证优化，并编写简易的原型验证了我们的优化。
+
+\subsection{HotTub中server重用的优化}
+\subsubsection{问题简述}
+由于HotTub源码开源\footnote{见https://github.com/dsrg-uoft/hottub.git}，可以编译并进行实验，且实现较为简单明了，故本文针对HotTub的代码进行分析，并对其实现提出优化。在实验中，我们想要通过执行相同的代码对HotTub的性能进行测试。测试的内容较为简单，即在同一目录下写入多个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...}）文件（文件内容见附录\ref{code}节），所有Java文件均包含一个打印hello world的Main函数，除类名不同外完全相同。使用\texttt{java\ -verbose:class}命令执行\texttt{Main\$i}，输出在执行\texttt{Main\$i}时JVM加载的所有class，可知当命令行未指定classpath时JVM将加载默认的class（包含在rt.jar中）。在未指定classpath的场景下，JVM仅会加载rt.jar中的class，故理想的情况是不指定classpath的所有Java命令均使用同一个server。但当我们使用HotTub执行所有\texttt{Main\$i}时，发现没有复用已有的server。直觉上，执行完全相同的代码路径的Java程序应当复用同一个server。
+
+\subsubsection{优化方案}
+通过分析HotTub的代码可知，HotTub首先对所有命令行参数（从第二个命令行参数，即\texttt{argv[1]}开始）算入checksum（通过调用函数\texttt{MD5\_Update()}），在指定classpath的情况下，还会对classpath上的所有.jar文件计算入checksum（代码分析见附录\ref{code:checksum}节）。如此，当执行的类名不同时，即使其执行的代码路径完全相同，都将不会从HotTub的server获得性能提升。为此，我们修改了其实现，在计算checksum时仅包含classpath及classpath上所有的jar文件。
+
+如图\ref{fig:result}显示了仅计算classpath的checksumHotTub与考虑了类名的HotTub占用内存大小的对比，使用HotTub运行1000个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...,999}）程序。可见，仅考虑classpath的checksum的HotTub占用系统的内存恒定，而未修改的HotTub随着执行次数线性增长。当执行到第552个请求时，未修改的HotTub（Vanilla HotTub）由于设置原因无法创建更多进程，故不再占用更多系统内存。
+
+\begin{figure*}[!htp]
+  \centering
+  \includegraphics[width=10cm]{free.pdf}
+  \caption{Classpath优化对系统剩余内存的影响}
+  \label{fig:result}
+\end{figure}
+
+事实上，还可以分析classpath中class的重和程度，使用一个阈值确定是否重用已运行的server。通过对比需要运行的java程序所需的class与已运行server已经加载的class，即可得知此java程序与server的匹配程度。虽然这一定程度上减小了内存的占用，但由于warm data的非最优匹配，应用程序或许将会产生相应的性能下降。这意味着，在节省内存与程序性能之间存在trade off。更加激进的优化方式有预先运行一些server为高频的请求进行缓存，由于时间原因本文并未对此优化进行实现。
+
+\subsection{分布式环境下各个节点的协调问题}
+\subsubsection{问题简述}
+与垃圾回收相同，JVM的预热也需要各个节点之间进行协调。在全局的角度看，HotTub对warm data的利用仍然不充分：多个节点上的JVM server进程可能保存了相同的class类，虽然多个JVM进程无法共享这些内存中保存的class数据，由于内存地址空间不同，但是这些class将完成相同的功能，在多个节点上重复加载该类会造成不必要的预热开销。当集群中节点数量较多时，加载这些额外的class、JIT编译相关代码的开销将不可忽略，使得应用无法从HotTub的性能优化中获益。
+
+依靠多个节点合作的延迟敏感型框架均会受到这个问题的影响，即无法及时进行warm up，且未使用的JVM warm data会占用宝贵的。举例而言，对于一个HDFS写请求，客户端首先请求NameNode创建文件记录，并根据DataNode列表来分配适合的新块来存储数据备份，相同内容的数据块在多个DataNode上需要进行冗余备份，从而达到容错的目的。这意味着，多个节点需要重复该预热过程，从而达到最佳性能。考虑到DataNode数量巨大，重复预热过程的开销是显著的。一种削弱HotTub优势场景是，一个集群中有多个服务器可以处理请求，如SOLR\cite{DBLP:journals/ercim/Brouwer17}。SOLR是一个全局检索引擎，能够快速地从大量的文本数据中选出所搜索的数据。其原理是将索引数据进行Shard分片，每个分片由多台服务器共同完成，当一个索引或搜索请求过来时会分别从不同的Shard的服务器中操作索引。由于搜索是延迟敏感的，多个节点的JVM预热将显著影响其性能。
+
+\subsubsection{优化方案}
+受Semeru设计的影响，我们借鉴Semeru的方法对该问题进行优化，并使得优化方案的可行性最大化。本文尚未实现此优化。
+
+如图\ref{fig:seme}所示，Semeru这一资源解聚架构的JVM中，Main JVM进程运行在CPU server上，即具有较强的计算能力但不一定有充足内存的节点，而其相应的Lightweight JVM（LJVM）进程运行在Memory server上，即拥有充足内存的节点上。Main JVM进程可以看到一个完整且连续的虚拟地址空间（即Universal Java Heap，UJH），该地址空间被多个memory server进行partition的管理，每个memory server负责提供一个虚拟地址空间partition对应的物理内存。CPU server的内存用于缓存UJH的数据（cache），当CPU server没有缓存所访问的数据时，将引发page fault，并将memory server上对应的数据swap到CPU server的主存中。当CPU server的主存占满时，将选择一些页swap到对应的memory server上。
+
+\begin{figure*}[!htp]
+  \centering
+  \includegraphics[width=\textwidth]{seme.png}
+  \caption{Universal Java Heap原理图}
+  \label{fig:seme}
+\end{figure}
+
+在我们的优化方案中，一组执行相似度很高的Java程序的server被放在同一个Coordination Group（CG），该CG中的具有相似执行路径（即使用到相类似的class以及JIT编译好的代码）的Java线程共享一个地址空间，运行在同一个JVM进程中。在同一个CG中每个节点都有JVM进程所保存warm data的缓存。在系统管理者启动一个类似于HDFS的分布式系统时，即配置该分布式系统运行的Coordination Group。对于每个Coordination Group，我们运行一个cache分配线程，在CG启动之时就在CG的所有节点上复制关键的最少的warm data，如已加载的class，和已经被JIT编译的代码。当CG中第一个Java线程执行时，即可获得所有的warm data，cache分配线程将在网络较为空闲时进行cache的复制。当CG中另一个节点的Java线程开始执行时，即可使用到warm data。当CG中某个节点的cache占满时，cache分配线程将释放未使用的warm data。在多个节点间共享地址空间可以通过分布式共享内存\cite{DBLP:journals/ieeecc/ProticTM96}（Distributed Shared Memory，DSM）实现，cache分配线程将使用一套高效的swap算法，这将作为我们的未来工作。
+
+我们的优化通过在节点间共享warm data，使得分布式系统中各个节点的JVM预热开销最小。相比于未修改的HotTub，我们的系统可以在内存资源紧张时将warm data交换到内存负担较小的节点上。由于RDMA等网络技术使得网络访问的速度快于磁盘访问的速度，我们的优化防止内存紧张时warm data被交换到磁盘上，同时保证了分布式系统中各个节点对warm data的充分利用。由于Semeru实现了分布式系统中的UJH，在节点间共享JVM数据有一定的可行性，可以仿照对Heap数据的共享，实现class数据的共享。
+
+\section{总结与未来工作}
+% TODO
+
+随着摩尔定律的终结，分布式系统越来越受到关注。分布式系统相比于单机有很高的可扩展性，可以为大数据处理、机器学习等任务提供海量的物理资源，但也为程序编写者提出了更多的挑战。管理型语言使用语言虚拟机大大减轻了开发人员的负担，通过垃圾回收机制管理内存，无需手动编写代码进行内存管理。开源社区如Apache也开源了众多的使用管理型语言编写的分布式大数据框架，如Hadoop、Hive、Spark等，掩盖了分布式系统的复杂性，进一步提高了程序的开发效率，为众多项目提供了更加高效便捷的解决方案。
+
+然而管理型语言的开发效率建立在一定的劣势之上，如内存占用过高、运行速度缓慢的问题。大量研究者对垃圾回收进行了优化，其终究的发现归结于使用Object表示、存储、处理数据有巨大的性能开销。Facade通过将数据移到native memory中进行管理从而消除object的开销，而Broom、Yak等系统通过关注数据（object）的生命周期来对垃圾回收进行优化；Skyway和Gerenuk观察到object在节点之间传输产生的不必要的性能开销，并使用两种互补的方法对此开销进行优化。HotTub关注了语言运行时（语言虚拟机）的启动预热开销，而Semeru关注了资源解聚架构下的GC性能问题。
+
+所有的研究并不能完全解决管理型语言的性能问题，其他具有更多优点的语言正在蓬勃发展，应用于大数据处理场景指日可待。如Go语言，相比于Java有较高的性能优势，同时有很好的序列化、反序列化性能，以及高并发支持。Go语言也有很好的开发效率，以及相比于C/C++更快的编译速度。但Go语言依然很难取代Java语言成为大数据环境下的主流语言，由于复杂的大数据处理框架正应用于生产环境中，将其替换为Go语言编写的框架无疑是一项不值得的工作。语言虚拟机需要借鉴新型语言的优点进行优化，才能更好地应对大数据时代所带来的挑战和机遇。
 
 \nocite{*}
 \cleardoublepage
@@ -375,9 +453,59 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
 \addappheadtotoc
 \section{附录}
 
-\subsection{//}
+\subsection{相关脚本}
+\label{code}
+\texttt{create.sh}脚本与\texttt{run.sh}脚本如图\ref{fig:code}所示。\texttt{create.sh}脚本创建所有的1000个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...,999}）文件并进行编译；\texttt{run.sh}脚本运行所有相同的（除类名外）1000个\texttt{Main\$i}类，并将系统剩余的内存输出到p.txt文件中。
+\begin{figure*}[!htp]
+  \centering
+  \includegraphics[width=14cm]{code.png}
+  \caption{create.sh与run.sh}
+  \label{fig:code}
+\end{figure}
 
+\subsection{checksum计算代码分析}
+\label{code:checksum}
+本节展示HotTub计算server checksum的大致代码。经过我们优化的代码如下所示，仅展示计算checksum的主要部分，其他部分以...的形式省略。
+\begin{lstlisting}[language=C]
+int compute_id(char *id, args_info *args) {
+  ...
+  
+  /* add in all the args */
+  for (i = 1; i < args->argc; i++) {
 
+    ...
+    
+    if (args->argv[i][0] == '-' && !MD5_Update(&md5ctx, args->argv[i], strlen(args->argv[i]))) {
+        fprintf(stderr, "[hottub][error][client compute_id] MD5_Update\n");
+        return -1;
+    }
+    
+    /* locate classpath while adding args */
+    if (strcmp(args->argv[i], "-classpath") == 0 ||
+            strcmp(args->argv[i], "-cp") == 0) {
+        classpath = args->argv[i + 1];
+        i++;
+        if (!MD5_Update(&md5ctx, args->argv[i], strlen(args->argv[i]))) {
+            fprintf(stderr, "[hottub][error][client compute_id] MD5_Update\n");
+            return -1;
+        }
+        continue;
+    }
+    
+    if (args->argv[i][0] != '-') {
+        break;
+    }
+  }
+  
+  ...
 
+  if (md5add_classpath(&md5ctx, classpath) == -1) {
+    return -1;
+  }
+  
+  ...
 
+}
+\end{lstlisting}
+\texttt{compute\_id}函数接收id参数和args参数，id指向server id，用来唯一标识一个JVM server进程，args则保存了命令行参数。在第4行，HotTub通过遍历命令行参数，并在第6行将命令行参数算入checksum，从而使得client请求能获得最大的warm data重用。我们通过修改第6行的实现，使其计算checksum时不算入文件名。第11行判读参数是否指定classpath，并且获取classpath。在第27行，HotTub读取classpath中的所有.jar文件，将其算入checksum。故HotTub通过对命令行参数和所加载的.jar文件数据计算checksum保证warm data的最大化重用。
 \end{document}
