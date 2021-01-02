@@ -340,22 +340,26 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
 \subsection{HotTub性能测试}
 本节对HotTub各方面的性能进行了测试。首先，通过在HotTub和未修改的JVM上不断重复执行相同的workload，测试HotTub是否可以消除JVM预热开销。其次，由于相同的workload最大化了warm data的复用，HotTub会表现出最好的性能，还需要测试不同的workload下HotTub的性能降低程度。最后，由于HotTub的server和client需要通信，server处理完一个client的请求之后需要重置JVM的状态，新建sever时需要调用\texttt{fork}等系统调用，且在内存中驻留的server进程保存了warm data，占据了额外的内存，HotTub相比于未修改的JVM有额外的开销。我们称之为管理开销（management overhead）。如果管理开销过大，则HotTub不具有实用性，我们还需测试HotTub的管理开销。
 
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=10cm]{10-a.png}
+  \caption{HotTub上Spark请求执行时间分解测试}
+  \label{fig:aaa}
+\end{figure}
+
 \subsubsection{性能提升}
 本小节测试HotTub利用warm data减小JVM预热开销的能力。对于未修改的JVM，我们运行五次相同的workload；对于HotTub，首先运行此workload一次，完成warm data的加载，再运行此workload五次。通过比较在未修改的JVM上运行五次相同的workload，和在HotTub预热后运行五次相同的workload，可以观察HotTub是否达到了减小预热时间的目的。
 
-首先，我们关闭JVM中的时间标记，对真实的大数据场景下的高频事件进行测试。重新进行第\ref{sec:exe}节中的实验，HotTub显著提升了延迟敏感性应用的性能。对于Spark SQL，每次请求100GB数据耗费的时间减小了29秒。对于HDFS，读取1MB数据的性能被提升了30.08倍。在200次对比测试中，所有的在HotTub上执行的任务均比未修改的JVM上执行的任务耗时更短。
-
-\begin{figure*}[!htp]
+\begin{figure}[!htp]
   \centering
-  \subfigure[HotTub上Spark请求执行时间分解测试]{
-  \includegraphics[width=0.49\textwidth]{10-a.png}}
-  \subfigure[HotTub上的HDFS read请求测试]{
-  \includegraphics[width=0.49\textwidth]{11-a.png}}
-  \caption{HotTub性能分析}
-  \label{fig:br6}
+  \includegraphics[width=10cm]{11-a.png}
+  \caption{HotTub上的HDFS read请求测试}
+  \label{fig:bbb}
 \end{figure}
 
-再打开JVM中的时间标记，对JVM中各部分的执行时间进行观察。如图\ref{fig:br6}（a），在所有的测试中，HotTub上运行的应用需要的JVM预热时间总是小于1\%的总执行时间，图中的预热时间太小已经无法观察到。如图\ref{fig:br6}（b），可以观察到在HotTub上初次执行的应用仍然有较长的延时，这是由于尚未有warm data以供使用。同时可以观察到，经过了12次的重复执行，HDFS read达到了最高性能，这进一步说明较短的任务甚至在没有达到最高执行性能时已经完成执行，HotTub保存warm data对于短任务的性能有极高的提升（30.08倍，如前文所述）。在微观性能上，HotTub减小了memory footprint，也减小了cache miss，同时减小了进程切换导致的TLB flush，由于篇幅原因，这些微观指标的测试不做介绍。
+首先，我们关闭JVM中的时间标记，对真实的大数据场景下的高频事件进行测试。重新进行第\ref{sec:exe}节中的实验，HotTub显著提升了延迟敏感性应用的性能。对于Spark SQL，每次请求100GB数据耗费的时间减小了29秒。对于HDFS，读取1MB数据的性能被提升了30.08倍。在200次对比测试中，所有的在HotTub上执行的任务均比未修改的JVM上执行的任务耗时更短。
+
+再打开JVM中的时间标记，对JVM中各部分的执行时间进行观察。如图\ref{fig:aaa}，在所有的测试中，HotTub上运行的应用需要的JVM预热时间总是小于1\%的总执行时间，图中的预热时间太小已经无法观察到。如图\ref{fig:bbb}，可以观察到在HotTub上初次执行的应用仍然有较长的延时，这是由于尚未有warm data以供使用。同时可以观察到，经过了12次的重复执行，HDFS read达到了最高性能，这进一步说明较短的任务甚至在没有达到最高执行性能时已经完成执行，HotTub保存warm data对于短任务的性能有极高的提升（30.08倍，如前文所述）。在微观性能上，HotTub减小了memory footprint，也减小了cache miss，同时减小了进程切换导致的TLB flush，由于篇幅原因，这些微观指标的测试不做介绍。
 
 \subsubsection{工作负载变化的性能影响}
 在真实场景下，JVM很少会执行同一个query多次，而是不断更换处理的工作负载的种类。这在一定程度上削尖了HotTub的优势，由于不同的工作负载将用到不同的class和JIT compiled code。为了测试这种工作负载的变化对HotTub的性能影响，我们首先运行training query多次，使得HotTub server中充满training query的warm data，再执行一次不同于training query的testing query，通过对比此情况下testing query的性能与在未修改的JVM上运行的性能，即可得知工作负载变化对HotTub的性能影响。如表\ref{compare1}所示，由于query之间的相似性（使用相同的class和code），不同query之间获得的性能提升有最低的1.47倍（q14->q15），但相同query获得的性能提升最高有1.78倍（q11->q11）。
@@ -385,6 +389,9 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
 \subsubsection{引入的管理开销}
 管理开销可以分为两部分，一部分在critical path上，直接影响client的性能，如client与server建立连接，server的class初始化；另一部分不在critical path上，仅影响server在处理完一次client请求之后多久才可以被重新使用，如server重置所有静态变量。经过测试，当JVM pool中没有待使用的server时，client需要$81ms$与server建立连接；如果有可重用的server，则连接耗时仅为$300\mu{}s$。server中class初始化耗时对于Hive而言是$350ms$，对于Spark executor是$400ms$，对于Spark客户端是$720ms$。每个未使用的已预热过的JVM server占用约1GB的内存。
 
+\subsection{HotTub研究思路总结}
+HotTub的设计基于JVM预热开销测试所得的发现，即大数据场景中延迟敏感型应用的性能受到JVM预热开销的影响，且JVM预热占据了短任务的较大部分的运行时间。通过将JVM重新设计，创建JVM server进程，保存warm data，研究者消除了JVM的预热开销，对短任务的响应时间有了巨大的提升，对于HDFS，读取1MB数据的性能被提升了30.08倍。相似的语言虚拟机如CLR也可通过此方法获得性能提升。相比于其他研究工作，HotTub另辟蹊径，从总体上研究了JVM的各部分的性能开销，发现了除垃圾回收外的性能瓶颈，与其他工作相辅相成、相互补充。其引入的管理开销尚在可接受的范围内，而一个未使用的JVM server占据了1G的内存，仍有可优化空间。
+
 \section{HotTub局限性优化}
 通过总结前文描述的大数据场景下语言虚拟机所遇到的性能瓶颈，我们认为HotTub的设计与实现尚未考虑到内存占用过多的问题，同时也没有对分布式系统中各个节点的状态进行考虑。
 
@@ -399,7 +406,33 @@ HotTub client的实现独立于JVM，共800行C代码；server的实现基于Ope
 由于HotTub源码开源\footnote{见https://github.com/dsrg-uoft/hottub.git}，可以编译并进行实验，且实现较为简单明了，故本文针对HotTub的代码进行分析，并对其实现提出优化。在实验中，我们想要通过执行相同的代码对HotTub的性能进行测试。测试的内容较为简单，即在同一目录下写入多个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...}）文件（文件内容见附录\ref{code}节），所有Java文件均包含一个打印hello world的Main函数，除类名不同外完全相同。使用\texttt{java\ -verbose:class}命令执行\texttt{Main\$i}，输出在执行\texttt{Main\$i}时JVM加载的所有class，可知当命令行未指定classpath时JVM将加载默认的class（包含在rt.jar中）。在未指定classpath的场景下，JVM仅会加载rt.jar中的class，故理想的情况是不指定classpath的所有Java命令均使用同一个server。但当我们使用HotTub执行所有\texttt{Main\$i}时，发现没有复用已有的server。直觉上，执行完全相同的代码路径的Java程序应当复用同一个server。
 
 \subsubsection{优化方案}
-通过分析HotTub的代码可知，HotTub首先对所有命令行参数（从第二个命令行参数，即\texttt{argv[1]}开始）算入checksum（通过调用函数\texttt{MD5\_Update()}），在指定classpath的情况下，还会对classpath上的所有.jar文件计算入checksum（代码分析见附录\ref{code:checksum}节）。如此，当执行的类名不同时，即使其执行的代码路径完全相同，都将不会从HotTub的server获得性能提升。为此，我们修改了其实现，在计算checksum时仅包含classpath及classpath上所有的jar文件。
+通过分析HotTub的代码可知，HotTub首先对所有命令行参数（从第二个命令行参数，即\texttt{argv[1]}开始）算入checksum（通过调用函数\texttt{MD5\_Update()}），在指定classpath的情况下，还会对classpath上的所有.jar文件计算入checksum（代码分析见附录\ref{code:checksum}节）。如此，当执行的类名不同时，即使其执行的代码路径完全相同，都将不会从HotTub的server获得性能提升。为此，我们修改了其实现，在计算checksum时仅包含classpath及classpath上所有的jar文件。实验环境如表\ref{inv}所示，使用了一个配备有16G内存的节点，HotTub基于的JVM版本是64位的OpenJDK Server VM。
+
+\begin{table}
+	\caption{实验环境}		
+	\label{inv}}
+	% \resizebox{0.6\columnwidth}{!}{
+  \centering
+  \begin{threeparttable}[b]
+    \begin{tabular}{c|ccccc}
+      \toprule[1.5pt] % 设置顶线的粗细
+      \# of Machines & 1\\
+      \midrule[1.5pt] % 设置顶线的粗细
+      CPU & 12-core Intel(R) Core(TM) i5-10400 CPU @ 2.90GHz \\
+      \hline
+      DRAM & 16GB \\
+      \hline
+      openjdk version & 1.8.0\_275 \\
+      \hline
+      JVM & OpenJDK 64-Bit Server VM (build 25.275-b01, mixed mode) \\
+      \hline
+      OS & Ubuntu 16.04.7 LTS \\
+      \hline
+      Kernel Version & Linux 4.15.0-128-generic \\
+      \bottomrule[1.5pt]
+    \end{tabular}
+  \end{threeparttable}
+\end{table}   
 
 如图\ref{fig:result}显示了仅计算classpath的checksumHotTub与考虑了类名的HotTub占用内存大小的对比，使用HotTub运行1000个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...,999}）程序。可见，仅考虑classpath的checksum的HotTub占用系统的内存恒定，而未修改的HotTub随着执行次数线性增长。当执行到第552个请求时，未修改的HotTub（Vanilla HotTub）由于设置原因无法创建更多进程，故不再占用更多系统内存。
 
