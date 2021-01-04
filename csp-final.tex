@@ -97,16 +97,16 @@ Nguyen等人提出了Facade\cite{DBLP:conf/asplos/NguyenWBFHX15}编译框架，�
 
 Gog等人提出了Broom\cite{DBLP:conf/hotos/GogGSVVRCMHI15}内存管理系统，取代了CLR\footnote{CLR\cite{DBLP:conf/indin/CavalieriSG16}，Common Language Runtime，是Microsoft .Net框架的语言虚拟机系统、运行时环境，运行.Net程序。使用任何语言编写的.Net程序均运行在CLR上，而JVM仅支持运行Java程序。}的GC系统。他们认为，大数据系统中存在多个Actor，这些Actor独立地运行，它们之间传递消息，形成了高度结构化的数据流，例如MapReduce\cite{DBLP:journals/cacm/DeanG08}中的map工作线程与reduce工作线程。每个Actor内的对象在Actor完成工作后不再会用到，仅有Actor之间传递的数据（object）需要保存，无需GC扫描。Object的生命周期如图\ref{fig:broom}所示。为了针对这类高度结构化的应用对垃圾收集器进行优化，Broom内存管理器使用了基于region（分区）的内存管理策略\cite{DBLP:conf/padl/ElsmanH20}，对象在各个region中保存而不在堆中由GC管理，由程序员手动释放region中的对象。Broom内存管理器减轻了GC的负担，减少了59\%的运行时间，但使得程序员的负担增加。
 
-\begin{figure}
+\begin{figure}[!htp]
   \centering
   \includegraphics[width=10cm]{broom.png}
-  \caption{Broom object生命周期}}
+  \caption{Broom Region类型转换}}
   \label{fig:broom}
 \end{figure}
 
 \subsection{JVM启动耗时对延迟敏感型应用的影响}
 \subsubsection{问题概述}
-社区中长期存在对Java性能的激烈讨论，尤其是Java是否适合编写延迟敏感型应用的问题\cite{debate1,debate2,debate3,debate4}。一些程序员坚持使用C++等非管理型语言编写键值存储系统，因为他们认为Java天生就是较慢的。Java之所以适用于编写Hadoop框架是因为Hadoop大部分时间在进行I/O操作\cite{why}。在学术界，对于大数据框架的性能优化主要集中在对GC性能的优化、调度策略的优化、数据交换开销的优化等，故我们缺少对Java各个方面性能的整体了解。经过实验测得，在I/O密集型任务中，JVM的预热开销也是较大的，如在从HDFS中读取1G的文件的过程中，JVM预热使用的时间占总运行时间的33\%b\cite{DBLP:conf/osdi/LionCSZGY16}，预热时间不随任务数据量的变化而变化。在大数据框架中，复杂的软件栈使得Java运行环境的加载更加缓慢，因为需要加载更多的class，如Spark为了完成一次请求需要加载19066个class。
+社区中长期存在对Java性能的激烈讨论，尤其是Java是否适合编写延迟敏感型应用的问题\cite{debate1,debate2,debate3,debate4}。一些程序员坚持使用C++等非管理型语言编写键值存储系统，因为他们认为Java天生就是较慢的。Java之所以适用于编写Hadoop框架是因为Hadoop大部分时间在进行I/O操作\cite{why}。在学术界，对于大数据框架的性能优化主要集中在对GC性能的优化、调度策略的优化、数据交换开销的优化等，故我们缺少对Java各个方面性能的整体了解。经过实验测得，在I/O密集型任务中，JVM的预热开销也是较大的，如在从HDFS中读取1G的文件的过程中，JVM预热使用的时间占总运行时间的33\%\cite{DBLP:conf/osdi/LionCSZGY16}，预热时间不随任务数据量的变化而变化。在大数据框架中，复杂的软件栈使得Java运行环境的加载更加缓慢，因为需要加载更多的class，如Spark为了完成一次请求需要加载19066个class。
 
 \subsubsection{解决方案}
 Lion等人经过实验测得，JVM的性能瓶颈在于JVM的启动预热（warm-up），并编写了HotTub\cite{DBLP:conf/osdi/LionCSZGY16}代替了HotSpot\footnote{HotSpot是一个Java虚拟机的实现，由Sun公司开发，包含在OpenJDK中，是主流的JVM。详见https://stackoverflow.com/questions/16568253/difference-between-jvm-and-hotspot}解决了Java虚拟机启动时间过长的问题。他们首先通过修改Java程序的调用过程测量出class加载与字节码解释执行的开销，观察出JVM预热对性能的巨大影响。同时，他们在HotSpot的基础上修改实现了HotTub，在多次请求中复用同一个JVM实例，从而免去JVM的预热开销。
@@ -120,7 +120,7 @@ Lion等人经过实验测得，JVM的性能瓶颈在于JVM的启动预热（warm
 \subsubsection{解决方案}
 Maas等人设计的Taurus\cite{DBLP:conf/asplos/MaasA0K16}系统通过在分布式处理系统中加入一个分布式决策机制，将每个节点上独立的运行时系统组织为一个Holistic Runtime System（全局运行时系统，HRS），从而做出在分布式系统全局下正确的GC、JIT决策。其架构如图\ref{fig:taurus}所示。HRS将每个节点上支持分布式应用运行的runtime当做一个整体，看作一个分布式系统，从而做出合理的全局决策，而非每个节点上的runtime独立地做出决策。当在某个节点上运行的一个Holistic Runtime System实例启动时，该实例加入执行同一个policy的runtime的集合，或成为该集合的leader，该集合称为一个coordination group（协调组）。每个实例启动时会附带执行monitor线程，从consensus layer（一致性层）获取本协调组的状态信息。在每个epoch（阶段）结束时，协调组的leader执行该协调组的policy，通过考虑所协调组中所有runtime的状态信息，制定下一个epoch中每个runtime需要执行的事件，同时，协调组中的每个runtime向leader发送自己的最新状态，从而开始下一个epoch。在实验中，作者针对每个分布式应用所遇到的特定问题制定了相应的policy，分别对批处理型工作负载和交互式工作负载进行测试。通过执行STU（Stop The Universe）的policy，批处理型工作负载Spark PageRank的执行时间降低了21\%；对于交互型工作负载Apache Cassandra，read请求的99.99\%的尾延迟从65.7 ms 降低到了 33.8 ms，99.9999\%尾延迟从128.6 ms 降低到了 54.6 ms。
 
-\begin{figure}
+\begin{figure}[!htp]
   \centering
   \includegraphics[width=12cm]{taurus.png}
   \caption{Taurus架构图}}
@@ -133,7 +133,7 @@ Maas等人设计的Taurus\cite{DBLP:conf/asplos/MaasA0K16}系统通过在分布�
 
 \subsubsection{解决方案}
 
-\begin{figure}
+\begin{figure}[!htp]
   \centering
   \includegraphics[width=10cm]{skyway.png}
   \caption{Skyway原理图}}
@@ -144,7 +144,7 @@ Nguyen等人提出的Skyway\cite{DBLP:conf/asplos/NguyenFNXDL18}将本地与远�
 
 Navasca等人认为，数据分析的任务经常使用的数据类型是不可变且被限制的，他们开发的Gerenuk\cite{DBLP:conf/sosp/NavascaCNDLKX19}编译器将一个SER（speculative execution region，预测执行区）编译为直接对来自于磁盘或网络的native bytes进行操作的代码，从而降低了object表示数据所产生的额外内存开销，同时减小了运行时开销、垃圾回收开销与序列化、反序列化开销。其原理如图\ref{fig:gerenuk}所示。与Skyway不同，Gerenuk更希望数据以native bytes存在，这样有多方面的优势，如GC负担减小、object额外开销减小、序列化、反序列化开销减小。由于SER开始于一个反序列化点，终止于一个序列化点，Gerenuk需要大数据框架开发者标记出这些起始点与终结点。通过将object编译为处于native memory中的数据结构、细粒度地将Java bytecode编译为访问native memory的指令，Gerenuk获得了更低的GC开销与序列化、反序列化开销。Gerenuk编译的Spark、Hadoop程序均获得了更低的内存占用、更低的GC开销、序列化、反序列化开销等。
 
-\begin{figure}
+\begin{figure}[!htp]
   \centering
   \includegraphics[width=10cm]{gerenuk.png}
   \caption{Gerenuk原理图}}
@@ -515,7 +515,7 @@ HotTub的设计基于JVM预热开销测试所得的发现，即大数据场景�
   \end{threeparttable}
 \end{table}   
 
-如图\ref{fig:result}显示了仅计算classpath的checksumHotTub与考虑了类名的HotTub占用内存大小的对比，使用HotTub运行1000个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...,999}）程序。可见，仅考虑classpath的checksum的HotTub占用系统的内存恒定，而未修改的HotTub随着执行次数线性增长。当执行到第552个请求时，未修改的HotTub（Vanilla HotTub）由于设置原因无法创建更多进程，故不再占用更多系统内存。
+如图\ref{fig:result}显示了仅计算classpath的checksumHotTub与考虑了类名的HotTub占用内存大小的对比，使用HotTub运行1000个\texttt{Main\$i.java}（\texttt{i = 0,1,2,...,999}）程序。可见，仅考虑classpath的checksum的HotTub占用系统的内存恒定，而未修改的HotTub随着执行次数线性增长。当执行到第552个请求时，未修改的HotTub（Vanilla HotTub）由于内存不足的原因无法创建更多进程，出现Out of Memory Error，故不再占用更多系统内存。
 
 \begin{figure*}[!htp]
   \centering
@@ -526,7 +526,7 @@ HotTub的设计基于JVM预热开销测试所得的发现，即大数据场景�
 
 事实上，还可以分析classpath中class的重和程度，使用一个阈值确定是否重用已运行的server。通过对比需要运行的java程序所需的class与已运行server已经加载的class，即可得知此java程序与server的匹配程度。虽然这一定程度上减小了内存的占用，但由于warm data的非最优匹配，应用程序或许将会产生相应的性能下降。这意味着，在节省内存与程序性能之间存在trade off。更加激进的优化方式有预先运行一些server为高频的请求进行缓存，由于时间原因本文并未对此优化进行实现。
 
-\subsection{分布式环境下各个节点的协调问题}
+\subsection{分布式环境下各个节点的协调预热问题}
 \subsubsection{问题简述}
 与垃圾回收相同，JVM的预热也需要各个节点之间进行协调。在全局的角度看，HotTub对warm data的利用仍然不充分：多个节点上的JVM server进程可能保存了相同的class类，虽然多个JVM进程无法共享这些内存中保存的class数据，由于内存地址空间不同，但是这些class将完成相同的功能，在多个节点上重复加载该类会造成不必要的预热开销。当集群中节点数量较多时，加载这些额外的class、JIT编译相关代码的开销将不可忽略，使得应用无法从HotTub的性能优化中获益。
 
